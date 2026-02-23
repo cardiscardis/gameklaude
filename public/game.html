@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Space Drift — Desktop Game</title>
+  <link rel="stylesheet" href="game.css">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="overlay">
+    <div id="overlay-content">
+      <h1>SPACE DRIFT</h1>
+      <p class="subtitle">Mobile Joystick Controller</p>
+      <div id="room-info">
+        <span class="label">ROOM CODE</span>
+        <span id="room-code" class="code">Connecting...</span>
+      </div>
+      <div id="connection-status">
+        <div class="status-dot waiting"></div>
+        <span id="status-text">Waiting for controller...</span>
+      </div>
+      <p class="instructions">Open <strong id="controller-url"></strong> on your phone and enter the room code above.</p>
+    </div>
+  </div>
+  <canvas id="gameCanvas"></canvas>
+  <div id="hud">
+    <div id="score-display">
+      <span class="hud-label">SCORE</span>
+      <span id="score">0</span>
+    </div>
+    <div id="lives-display">
+      <span class="hud-label">LIVES</span>
+      <span id="lives">♥♥♥</span>
+    </div>
+    <div id="controller-indicator">
+      <div class="status-dot" id="ctrl-dot"></div>
+      <span id="ctrl-label">No Controller</span>
+    </div>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
