@@ -1,4 +1,4 @@
-// ========== SPACE DRIFT — GAME ENGINE ==========
+// ========== SPACE DRIFT — GAME ENGINE (Multiplayer) ==========
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
@@ -12,67 +12,115 @@ resize();
 
 // ----- Socket.IO -----
 const socket = io();
-let controllerConnected = false;
+let gameMode = 'single'; // 'single' or 'multi'
+let gameStarted = false;
 
-socket.emit('join-as-game');
+// Player colors
+const P_COLORS = {
+    1: { main: '#00f0ff', glow: '#0891b2', boost: '#8b5cf6', boostGlow: '#a855f7', trail: '#00f0ff', bullet: '#00f0ff' },
+    2: { main: '#f472b6', glow: '#db2777', boost: '#c084fc', boostGlow: '#a855f7', trail: '#f472b6', bullet: '#f472b6' }
+};
+
+// ----- Mode Selection -----
+document.getElementById('btn-single').addEventListener('click', () => startGame('single'));
+document.getElementById('btn-multi').addEventListener('click', () => startGame('multi'));
+
+function startGame(mode) {
+    gameMode = mode;
+    document.getElementById('mode-select').classList.add('hidden');
+    document.getElementById('overlay').classList.remove('hidden');
+
+    if (mode === 'multi') {
+        document.getElementById('mode-label').textContent = 'MULTIPLAYER — 2 CONTROLLERS';
+        document.getElementById('players-status').classList.remove('hidden');
+        document.getElementById('connection-status').classList.add('hidden');
+    } else {
+        document.getElementById('mode-label').textContent = 'SINGLE PLAYER';
+    }
+
+    socket.emit('join-as-game', { mode });
+}
 
 socket.on('room-created', (data) => {
     document.getElementById('room-code').textContent = data.roomId;
-    // Build controller URL
     const url = `${location.protocol}//${location.hostname}:${location.port}/`;
     document.getElementById('controller-url').textContent = url;
 });
 
-socket.on('controller-connected', () => {
-    controllerConnected = true;
-    document.getElementById('ctrl-dot').classList.add('connected');
-    document.getElementById('ctrl-label').textContent = 'Controller Connected';
-    document.getElementById('overlay').classList.add('hidden');
-    const statusDot = document.querySelector('#connection-status .status-dot');
-    statusDot.classList.remove('waiting');
-    document.getElementById('status-text').textContent = 'Controller connected!';
+socket.on('controller-connected', (data) => {
+    const pNum = data.playerNumber;
+
+    if (gameMode === 'multi') {
+        // Update player slot
+        const dot = document.querySelector(`#p${pNum}-slot .player-dot`);
+        const status = document.getElementById(`p${pNum}-status`);
+        if (dot) dot.classList.add('connected');
+        if (status) status.textContent = 'Connected!';
+
+        // Start game when both players connected
+        if (data.totalControllers >= 2) {
+            setTimeout(() => {
+                document.getElementById('overlay').classList.add('hidden');
+                initPlayers();
+                if (!gameStarted) {
+                    gameStarted = true;
+                    startGameLoop();
+                }
+            }, 800);
+        }
+    } else {
+        // Single player — same as before
+        document.getElementById('ctrl-dot').classList.add('connected');
+        document.getElementById('ctrl-label').textContent = 'Controller Connected';
+        document.getElementById('overlay').classList.add('hidden');
+        const statusDot = document.querySelector('#connection-status .status-dot');
+        if (statusDot) statusDot.classList.remove('waiting');
+        document.getElementById('status-text').textContent = 'Controller connected!';
+
+        initPlayers();
+        if (!gameStarted) {
+            gameStarted = true;
+            startGameLoop();
+        }
+    }
 });
 
-socket.on('controller-disconnected', () => {
-    controllerConnected = false;
-    document.getElementById('ctrl-dot').classList.remove('connected');
-    document.getElementById('ctrl-label').textContent = 'Controller Lost';
+socket.on('controller-disconnected', (data) => {
+    if (gameMode === 'multi') {
+        const pNum = data.playerNumber;
+        if (pNum) {
+            const dot = document.querySelector(`#p${pNum}-slot .player-dot`);
+            if (dot) dot.classList.remove('connected');
+        }
+    } else {
+        document.getElementById('ctrl-dot').classList.remove('connected');
+        document.getElementById('ctrl-label').textContent = 'Controller Lost';
+    }
 });
 
-// Remote joystick input
-let remoteInput = { angle: 0, magnitude: 0 };
+// Remote input — per player
+const remoteInputs = { 1: { angle: 0, magnitude: 0 }, 2: { angle: 0, magnitude: 0 } };
+
 socket.on('joystick-input', (data) => {
-    remoteInput = data;
+    const pid = data.playerId || 1;
+    remoteInputs[pid] = { angle: data.angle, magnitude: data.magnitude };
 });
 
 socket.on('button-action', (data) => {
+    const pid = data.playerId || 1;
     if (data.action === 'fire') {
-        shoot();
+        shootFor(pid);
     } else if (data.action === 'boost') {
-        activateBoost();
+        activateBoostFor(pid);
     }
 });
 
 // ----- Game State -----
-let score = 0;
-let lives = 3;
-let gameOver = false;
-let boostActive = false;
-let boostTimer = 0;
-
-const ship = {
-    x: 0, y: 0,
-    vx: 0, vy: 0,
-    angle: -Math.PI / 2,
-    radius: 18,
-    thrust: 0,
-    rotationSpeed: 0
-};
-
-let bullets = [];
+let players = [];
 let asteroids = [];
 let particles = [];
 let stars = [];
+let allGameOver = false;
 
 // Init stars
 for (let i = 0; i < 200; i++) {
@@ -84,16 +132,51 @@ for (let i = 0; i < 200; i++) {
     });
 }
 
-function resetShip() {
-    ship.x = canvas.width / 2;
-    ship.y = canvas.height / 2;
-    ship.vx = 0;
-    ship.vy = 0;
-    ship.angle = -Math.PI / 2;
+function createPlayer(id, x, y) {
+    const colors = P_COLORS[id];
+    return {
+        id,
+        x, y,
+        vx: 0, vy: 0,
+        angle: -Math.PI / 2,
+        radius: 18,
+        score: 0,
+        lives: 3,
+        dead: false,
+        gameOver: false,
+        respawnTimer: 0,
+        boostActive: false,
+        boostTimer: 0,
+        bullets: [],
+        colors
+    };
 }
-resetShip();
 
-// Spawn asteroids periodically
+function initPlayers() {
+    players = [];
+    if (gameMode === 'single') {
+        players.push(createPlayer(1, canvas.width / 2, canvas.height / 2));
+        // Show single player HUD
+        document.getElementById('hud').classList.remove('hidden');
+        document.getElementById('hud-multi').classList.add('hidden');
+    } else {
+        players.push(createPlayer(1, canvas.width / 3, canvas.height / 2));
+        players.push(createPlayer(2, (canvas.width / 3) * 2, canvas.height / 2));
+        // Show multiplayer HUD
+        document.getElementById('hud').classList.add('hidden');
+        document.getElementById('hud-multi').classList.remove('hidden');
+    }
+    asteroids = [];
+    particles = [];
+    allGameOver = false;
+    for (let i = 0; i < 5; i++) spawnAsteroid();
+}
+
+function getPlayer(id) {
+    return players.find(p => p.id === id);
+}
+
+// Spawn asteroids
 function spawnAsteroid() {
     const side = Math.floor(Math.random() * 4);
     let x, y;
@@ -128,27 +211,31 @@ function generateAsteroidShape(radius) {
     return points;
 }
 
-// ----- Keyboard Input -----
+// ----- Keyboard Input (P1 only in single player) -----
 const keys = {};
 window.addEventListener('keydown', (e) => { keys[e.key] = true; });
 window.addEventListener('keyup', (e) => { keys[e.key] = false; });
 
 // ----- Actions -----
-function shoot() {
+function shootFor(playerId) {
+    const p = getPlayer(playerId);
+    if (!p || p.dead || p.gameOver) return;
     const speed = 8;
-    bullets.push({
-        x: ship.x + Math.cos(ship.angle) * 22,
-        y: ship.y + Math.sin(ship.angle) * 22,
-        vx: Math.cos(ship.angle) * speed + ship.vx * 0.3,
-        vy: Math.sin(ship.angle) * speed + ship.vy * 0.3,
+    p.bullets.push({
+        x: p.x + Math.cos(p.angle) * 22,
+        y: p.y + Math.sin(p.angle) * 22,
+        vx: Math.cos(p.angle) * speed + p.vx * 0.3,
+        vy: Math.sin(p.angle) * speed + p.vy * 0.3,
         life: 60
     });
 }
 
-function activateBoost() {
-    if (!boostActive) {
-        boostActive = true;
-        boostTimer = 90; // frames
+function activateBoostFor(playerId) {
+    const p = getPlayer(playerId);
+    if (!p || p.dead || p.gameOver) return;
+    if (!p.boostActive) {
+        p.boostActive = true;
+        p.boostTimer = 90;
     }
 }
 
@@ -168,160 +255,214 @@ function spawnParticles(x, y, color, count) {
     }
 }
 
+function resetPlayer(p) {
+    if (gameMode === 'single') {
+        p.x = canvas.width / 2;
+        p.y = canvas.height / 2;
+    } else {
+        p.x = p.id === 1 ? canvas.width / 3 : (canvas.width / 3) * 2;
+        p.y = canvas.height / 2;
+    }
+    p.vx = 0;
+    p.vy = 0;
+    p.angle = -Math.PI / 2;
+}
+
 // ----- Update -----
 function update() {
-    if (gameOver) return;
+    if (allGameOver) return;
 
-    const accel = boostActive ? 0.35 : 0.18;
-    const friction = 0.985;
-    const maxSpeed = boostActive ? 8 : 5;
+    // Update each player
+    players.forEach(p => {
+        if (p.gameOver) return;
 
-    // Keyboard input
-    if (keys['ArrowLeft'] || keys['a']) ship.angle -= 0.06;
-    if (keys['ArrowRight'] || keys['d']) ship.angle += 0.06;
-    if (keys['ArrowUp'] || keys['w']) {
-        ship.vx += Math.cos(ship.angle) * accel;
-        ship.vy += Math.sin(ship.angle) * accel;
-    }
-    if (keys[' ']) { keys[' '] = false; shoot(); }
+        // Handle respawn timer
+        if (p.dead) {
+            p.respawnTimer--;
+            if (p.respawnTimer <= 0) {
+                if (p.lives <= 0) {
+                    p.gameOver = true;
+                    return;
+                }
+                p.dead = false;
+                resetPlayer(p);
+            }
+            return;
+        }
 
-    // Remote joystick
-    if (remoteInput.magnitude > 0.1) {
-        ship.angle = remoteInput.angle;
-        const force = remoteInput.magnitude * accel * 1.5;
-        ship.vx += Math.cos(ship.angle) * force;
-        ship.vy += Math.sin(ship.angle) * force;
-    }
+        const accel = p.boostActive ? 0.35 : 0.18;
+        const friction = 0.985;
+        const maxSpeed = p.boostActive ? 8 : 5;
 
-    // Physics
-    ship.vx *= friction;
-    ship.vy *= friction;
-    const speed = Math.sqrt(ship.vx ** 2 + ship.vy ** 2);
-    if (speed > maxSpeed) {
-        ship.vx = (ship.vx / speed) * maxSpeed;
-        ship.vy = (ship.vy / speed) * maxSpeed;
-    }
-    ship.x += ship.vx;
-    ship.y += ship.vy;
+        // Keyboard input (Player 1 only, single player mode)
+        if (p.id === 1) {
+            if (keys['ArrowLeft'] || keys['a']) p.angle -= 0.06;
+            if (keys['ArrowRight'] || keys['d']) p.angle += 0.06;
+            if (keys['ArrowUp'] || keys['w']) {
+                p.vx += Math.cos(p.angle) * accel;
+                p.vy += Math.sin(p.angle) * accel;
+            }
+            if (keys[' ']) { keys[' '] = false; shootFor(1); }
+        }
 
-    // Wrap around
-    if (ship.x < -30) ship.x = canvas.width + 30;
-    if (ship.x > canvas.width + 30) ship.x = -30;
-    if (ship.y < -30) ship.y = canvas.height + 30;
-    if (ship.y > canvas.height + 30) ship.y = -30;
+        // Remote joystick per player
+        const input = remoteInputs[p.id];
+        if (input && input.magnitude > 0.1) {
+            p.angle = input.angle;
+            const force = input.magnitude * accel * 1.5;
+            p.vx += Math.cos(p.angle) * force;
+            p.vy += Math.sin(p.angle) * force;
+        }
 
-    // Boost timer
-    if (boostActive) {
-        boostTimer--;
-        if (boostTimer <= 0) boostActive = false;
-        // Boost trail
-        spawnParticles(
-            ship.x - Math.cos(ship.angle) * 18,
-            ship.y - Math.sin(ship.angle) * 18,
-            '#8b5cf6', 2
-        );
-    }
+        // Physics
+        p.vx *= friction;
+        p.vy *= friction;
+        const speed = Math.sqrt(p.vx ** 2 + p.vy ** 2);
+        if (speed > maxSpeed) {
+            p.vx = (p.vx / speed) * maxSpeed;
+            p.vy = (p.vy / speed) * maxSpeed;
+        }
+        p.x += p.vx;
+        p.y += p.vy;
 
-    // Engine particles
-    if (remoteInput.magnitude > 0.1 || keys['ArrowUp'] || keys['w']) {
-        spawnParticles(
-            ship.x - Math.cos(ship.angle) * 18,
-            ship.y - Math.sin(ship.angle) * 18,
-            '#00f0ff', 1
-        );
-    }
+        // Wrap around
+        if (p.x < -30) p.x = canvas.width + 30;
+        if (p.x > canvas.width + 30) p.x = -30;
+        if (p.y < -30) p.y = canvas.height + 30;
+        if (p.y > canvas.height + 30) p.y = -30;
 
-    // Bullets
-    bullets.forEach((b) => {
-        b.x += b.vx;
-        b.y += b.vy;
-        b.life--;
+        // Boost timer
+        if (p.boostActive) {
+            p.boostTimer--;
+            if (p.boostTimer <= 0) p.boostActive = false;
+            spawnParticles(
+                p.x - Math.cos(p.angle) * 18,
+                p.y - Math.sin(p.angle) * 18,
+                p.colors.boost, 2
+            );
+        }
+
+        // Engine particles
+        if ((input && input.magnitude > 0.1) || (p.id === 1 && (keys['ArrowUp'] || keys['w']))) {
+            spawnParticles(
+                p.x - Math.cos(p.angle) * 18,
+                p.y - Math.sin(p.angle) * 18,
+                p.colors.trail, 1
+            );
+        }
+
+        // Bullets update
+        p.bullets.forEach(b => {
+            b.x += b.vx;
+            b.y += b.vy;
+            b.life--;
+        });
+        p.bullets = p.bullets.filter(b => b.life > 0);
     });
-    bullets = bullets.filter((b) => b.life > 0);
 
-    // Asteroids
-    asteroids.forEach((a) => {
+    // Asteroids movement
+    asteroids.forEach(a => {
         a.x += a.vx;
         a.y += a.vy;
         a.rotation += a.rotSpeed;
     });
-    // Remove off-screen asteroids
-    asteroids = asteroids.filter((a) => {
-        return a.x > -200 && a.x < canvas.width + 200 && a.y > -200 && a.y < canvas.height + 200;
+    asteroids = asteroids.filter(a =>
+        a.x > -200 && a.x < canvas.width + 200 && a.y > -200 && a.y < canvas.height + 200
+    );
+
+    // Collision: each player's bullets vs asteroids
+    players.forEach(p => {
+        if (p.dead || p.gameOver) return;
+        for (let bi = p.bullets.length - 1; bi >= 0; bi--) {
+            for (let ai = asteroids.length - 1; ai >= 0; ai--) {
+                const b = p.bullets[bi];
+                const a = asteroids[ai];
+                if (!b || !a) continue;
+                const dist = Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
+                if (dist < a.radius) {
+                    spawnParticles(a.x, a.y, '#f472b6', 12);
+                    p.score += Math.floor(50 / a.radius * 10);
+                    // Split into smaller
+                    if (a.radius > 18) {
+                        for (let s = 0; s < 2; s++) {
+                            const newR = a.radius * 0.55;
+                            const ang = Math.random() * Math.PI * 2;
+                            const sp = Math.random() * 2 + 1.5;
+                            asteroids.push({
+                                x: a.x, y: a.y,
+                                vx: Math.cos(ang) * sp,
+                                vy: Math.sin(ang) * sp,
+                                radius: newR,
+                                rotation: 0,
+                                rotSpeed: (Math.random() - 0.5) * 0.06,
+                                vertices: generateAsteroidShape(newR)
+                            });
+                        }
+                    }
+                    asteroids.splice(ai, 1);
+                    p.bullets.splice(bi, 1);
+                    break;
+                }
+            }
+        }
     });
 
-    // Collision: bullets vs asteroids
-    for (let bi = bullets.length - 1; bi >= 0; bi--) {
+    // Collision: ship vs asteroids (per player)
+    players.forEach(p => {
+        if (p.dead || p.gameOver) return;
         for (let ai = asteroids.length - 1; ai >= 0; ai--) {
-            const b = bullets[bi];
             const a = asteroids[ai];
-            if (!b || !a) continue;
-            const dist = Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
-            if (dist < a.radius) {
-                spawnParticles(a.x, a.y, '#f472b6', 12);
-                score += Math.floor(50 / a.radius * 10);
-                // Split into smaller
-                if (a.radius > 18) {
-                    for (let s = 0; s < 2; s++) {
-                        const newR = a.radius * 0.55;
-                        const ang = Math.random() * Math.PI * 2;
-                        const sp = Math.random() * 2 + 1.5;
-                        asteroids.push({
-                            x: a.x, y: a.y,
-                            vx: Math.cos(ang) * sp,
-                            vy: Math.sin(ang) * sp,
-                            radius: newR,
-                            rotation: 0,
-                            rotSpeed: (Math.random() - 0.5) * 0.06,
-                            vertices: generateAsteroidShape(newR)
-                        });
-                    }
-                }
+            const dist = Math.sqrt((p.x - a.x) ** 2 + (p.y - a.y) ** 2);
+            if (dist < p.radius + a.radius * 0.7) {
+                spawnParticles(p.x, p.y, '#ef4444', 20);
+                p.lives--;
                 asteroids.splice(ai, 1);
-                bullets.splice(bi, 1);
+                p.dead = true;
+                p.respawnTimer = 120; // ~2 seconds at 60fps
                 break;
             }
         }
-    }
+    });
 
-    // Collision: ship vs asteroids
-    for (let ai = asteroids.length - 1; ai >= 0; ai--) {
-        const a = asteroids[ai];
-        const dist = Math.sqrt((ship.x - a.x) ** 2 + (ship.y - a.y) ** 2);
-        if (dist < ship.radius + a.radius * 0.7) {
-            spawnParticles(ship.x, ship.y, '#ef4444', 20);
-            lives--;
-            asteroids.splice(ai, 1);
-            if (lives <= 0) {
-                gameOver = true;
-                setTimeout(() => {
-                    score = 0;
-                    lives = 3;
-                    gameOver = false;
-                    asteroids = [];
-                    bullets = [];
-                    resetShip();
-                }, 2500);
-            } else {
-                resetShip();
-            }
-            break;
-        }
+    // Check global game over
+    const allDead = players.every(p => p.gameOver);
+    if (allDead) {
+        allGameOver = true;
+        setTimeout(() => {
+            // Reset all
+            initPlayers();
+        }, 3000);
     }
 
     // Particles
-    particles.forEach((p) => {
-        p.x += p.vx;
-        p.y += p.vy;
-        p.life--;
+    particles.forEach(pp => {
+        pp.x += pp.vx;
+        pp.y += pp.vy;
+        pp.life--;
     });
-    particles = particles.filter((p) => p.life > 0);
+    particles = particles.filter(pp => pp.life > 0);
 
-    // HUD
-    document.getElementById('score').textContent = score;
-    const heartsArr = [];
-    for (let i = 0; i < Math.max(lives, 0); i++) heartsArr.push('♥');
-    document.getElementById('lives').textContent = heartsArr.join('');
+    // Update HUD
+    if (gameMode === 'single') {
+        const p = players[0];
+        if (p) {
+            document.getElementById('score').textContent = p.score;
+            const heartsArr = [];
+            for (let i = 0; i < Math.max(p.lives, 0); i++) heartsArr.push('♥');
+            document.getElementById('lives').textContent = heartsArr.join('');
+        }
+    } else {
+        players.forEach(p => {
+            const scoreEl = document.getElementById(`p${p.id}-score`);
+            const livesEl = document.getElementById(`p${p.id}-lives`);
+            if (scoreEl) scoreEl.textContent = p.score;
+            if (livesEl) {
+                const heartsArr = [];
+                for (let i = 0; i < Math.max(p.lives, 0); i++) heartsArr.push('♥');
+                livesEl.textContent = heartsArr.join('') || '☠';
+            }
+        });
+    }
 }
 
 // ----- Render -----
@@ -336,7 +477,7 @@ function draw() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Stars
-    stars.forEach((s) => {
+    stars.forEach(s => {
         ctx.fillStyle = `rgba(255,255,255,${s.alpha})`;
         ctx.beginPath();
         ctx.arc(s.x % canvas.width, s.y % canvas.height, s.size, 0, Math.PI * 2);
@@ -344,7 +485,7 @@ function draw() {
     });
 
     // Particles
-    particles.forEach((p) => {
+    particles.forEach(p => {
         const alpha = p.life / p.maxLife;
         ctx.fillStyle = p.color + Math.floor(alpha * 255).toString(16).padStart(2, '0');
         ctx.beginPath();
@@ -352,19 +493,22 @@ function draw() {
         ctx.fill();
     });
 
-    // Bullets
-    ctx.shadowBlur = 8;
-    ctx.shadowColor = '#00f0ff';
-    bullets.forEach((b) => {
-        ctx.fillStyle = '#00f0ff';
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, 3, 0, Math.PI * 2);
-        ctx.fill();
+    // Draw each player's bullets
+    players.forEach(p => {
+        if (p.bullets.length === 0) return;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = p.colors.bullet;
+        p.bullets.forEach(b => {
+            ctx.fillStyle = p.colors.bullet;
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+        });
+        ctx.shadowBlur = 0;
     });
-    ctx.shadowBlur = 0;
 
     // Asteroids
-    asteroids.forEach((a) => {
+    asteroids.forEach(a => {
         ctx.save();
         ctx.translate(a.x, a.y);
         ctx.rotate(a.rotation);
@@ -382,19 +526,21 @@ function draw() {
         ctx.restore();
     });
 
-    // Ship
-    if (!gameOver) {
+    // Draw each player's ship
+    players.forEach(p => {
+        if (p.dead || p.gameOver) return;
+
         ctx.save();
-        ctx.translate(ship.x, ship.y);
-        ctx.rotate(ship.angle);
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.angle);
 
         // Glow
-        ctx.shadowBlur = boostActive ? 25 : 12;
-        ctx.shadowColor = boostActive ? '#8b5cf6' : '#00f0ff';
+        ctx.shadowBlur = p.boostActive ? 25 : 12;
+        ctx.shadowColor = p.boostActive ? p.colors.boost : p.colors.main;
 
         // Ship body
-        ctx.fillStyle = boostActive ? '#c084fc' : '#00f0ff';
-        ctx.strokeStyle = boostActive ? '#a855f7' : '#0891b2';
+        ctx.fillStyle = p.boostActive ? p.colors.boostGlow : p.colors.main;
+        ctx.strokeStyle = p.colors.glow;
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(22, 0);
@@ -405,34 +551,77 @@ function draw() {
         ctx.fill();
         ctx.stroke();
 
+        // Player label (multiplayer only)
+        if (gameMode === 'multi') {
+            ctx.shadowBlur = 0;
+            ctx.rotate(-p.angle); // un-rotate for text
+            ctx.fillStyle = p.colors.main;
+            ctx.font = '600 10px Orbitron';
+            ctx.textAlign = 'center';
+            ctx.fillText(`P${p.id}`, 0, -28);
+        }
+
         ctx.shadowBlur = 0;
         ctx.restore();
-    }
+    });
 
     // Game Over text
-    if (gameOver) {
+    if (allGameOver) {
         ctx.fillStyle = '#ef4444';
         ctx.font = '900 48px Orbitron';
         ctx.textAlign = 'center';
-        ctx.fillText('DESTROYED', canvas.width / 2, canvas.height / 2 - 10);
+        ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20);
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
         ctx.font = '600 16px Inter';
-        ctx.fillText('Respawning...', canvas.width / 2, canvas.height / 2 + 30);
+        ctx.fillText('Respawning...', canvas.width / 2, canvas.height / 2 + 25);
+
+        // Show scores in multiplayer
+        if (gameMode === 'multi') {
+            players.forEach((p, i) => {
+                ctx.fillStyle = p.colors.main;
+                ctx.font = '700 20px Orbitron';
+                ctx.fillText(`P${p.id}: ${p.score}`, canvas.width / 2, canvas.height / 2 + 60 + i * 32);
+            });
+        }
     }
+
+    // Per-player death message
+    players.forEach(p => {
+        if (p.dead && !p.gameOver) {
+            ctx.fillStyle = p.colors.main;
+            ctx.font = '600 14px Orbitron';
+            ctx.textAlign = 'center';
+            ctx.globalAlpha = 0.7;
+            const pos = gameMode === 'single'
+                ? { x: canvas.width / 2, y: canvas.height / 2 }
+                : { x: p.id === 1 ? canvas.width / 4 : (canvas.width / 4) * 3, y: canvas.height / 2 };
+            ctx.fillText(`P${p.id} HIT!`, pos.x, pos.y);
+            if (p.lives > 0) {
+                ctx.font = '400 11px Inter';
+                ctx.fillText('Respawning...', pos.x, pos.y + 22);
+            } else {
+                ctx.fillStyle = '#ef4444';
+                ctx.font = '700 13px Orbitron';
+                ctx.fillText('DESTROYED', pos.x, pos.y + 22);
+            }
+            ctx.globalAlpha = 1;
+        }
+    });
 }
 
 // ----- Game Loop -----
 let spawnTimer = 0;
-function loop() {
-    update();
-    draw();
-    spawnTimer++;
-    if (spawnTimer % 90 === 0 && asteroids.length < 12) {
-        spawnAsteroid();
-    }
-    requestAnimationFrame(loop);
-}
 
-// Start
-for (let i = 0; i < 5; i++) spawnAsteroid();
-loop();
+function startGameLoop() {
+    function loop() {
+        update();
+        draw();
+        spawnTimer++;
+        const maxAsteroids = gameMode === 'multi' ? 16 : 12;
+        if (spawnTimer % 90 === 0 && asteroids.length < maxAsteroids) {
+            spawnAsteroid();
+        }
+        requestAnimationFrame(loop);
+    }
+    loop();
+}

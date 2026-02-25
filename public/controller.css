@@ -1,4 +1,4 @@
-/* ========== CONTROLLER STYLES ========== */
+/* ========== CONTROLLER STYLES (Multiplayer) ========== */
 * {
     margin: 0;
     padding: 0;
@@ -169,6 +169,40 @@ body {
     box-shadow: 0 0 6px #22c55e;
 }
 
+/* ---- Player Badge ---- */
+.player-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border: 2px solid #00f0ff;
+    border-radius: 12px;
+    padding: 4px 16px;
+    font-family: 'Orbitron', monospace;
+    font-weight: 900;
+    font-size: 0.85rem;
+    color: #00f0ff;
+    background: rgba(0, 240, 255, 0.12);
+    letter-spacing: 2px;
+    text-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+    animation: badgePop 0.4s ease;
+}
+
+@keyframes badgePop {
+    0% {
+        transform: scale(0.5);
+        opacity: 0;
+    }
+
+    60% {
+        transform: scale(1.15);
+    }
+
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
 #room-label {
     font-family: 'Orbitron', monospace;
     font-size: 0.7rem;
@@ -299,6 +333,38 @@ body {
     transform: scale(0.9);
     background: rgba(139, 92, 246, 0.2);
     box-shadow: 0 0 30px rgba(139, 92, 246, 0.3);
+}
+
+/* ======= PLAYER 2 THEME ======= */
+.player-2 #controller-screen {
+    background: radial-gradient(ellipse at 30% 70%, #2a1133 0%, #0a0a1a 60%);
+}
+
+.player-2 #joystick-ring {
+    border-color: rgba(244, 114, 182, 0.12);
+}
+
+.player-2 #joystick-stick {
+    background: radial-gradient(circle at 35% 35%, #3a1a2a, #1d0d1e);
+    border-color: rgba(244, 114, 182, 0.35);
+    box-shadow: 0 0 20px rgba(244, 114, 182, 0.15), inset 0 0 10px rgba(244, 114, 182, 0.1);
+}
+
+.player-2 #joystick-stick.active {
+    border-color: #f472b6;
+    box-shadow: 0 0 30px rgba(244, 114, 182, 0.35), inset 0 0 15px rgba(244, 114, 182, 0.2);
+}
+
+.player-2 .fire-btn {
+    border-color: rgba(244, 114, 182, 0.5);
+    background: rgba(244, 114, 182, 0.08);
+    color: #f472b6;
+}
+
+.player-2 .fire-btn:active,
+.player-2 .fire-btn.pressed {
+    background: rgba(244, 114, 182, 0.2);
+    box-shadow: 0 0 30px rgba(244, 114, 182, 0.3);
 }
 
 /* ---- Landscape optimization ---- */

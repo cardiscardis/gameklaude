@@ -28,18 +28,30 @@ app.get('/', (req, res) => {
 // --------------- Socket.IO ---------------
 const rooms = {};
 
+// Player colors
+const PLAYER_COLORS = {
+  1: '#00f0ff', // cyan
+  2: '#f472b6'  // pink/magenta
+};
+
 io.on('connection', (socket) => {
   console.log(`🔌 Connected: ${socket.id}`);
 
-  // Game client joins
-  socket.on('join-as-game', () => {
+  // Game client joins with mode selection
+  socket.on('join-as-game', (data) => {
+    const mode = (data && data.mode) || 'single';
     const roomId = generateRoomId();
-    rooms[roomId] = { game: socket.id, controllers: [] };
+    rooms[roomId] = {
+      game: socket.id,
+      mode: mode,
+      controllers: [],
+      maxPlayers: mode === 'multi' ? 2 : 1
+    };
     socket.join(roomId);
     socket.roomId = roomId;
     socket.role = 'game';
-    socket.emit('room-created', { roomId });
-    console.log(`🎮 Game joined room: ${roomId}`);
+    socket.emit('room-created', { roomId, mode });
+    console.log(`🎮 Game joined room: ${roomId} (mode: ${mode})`);
   });
 
   // Controller joins a room
@@ -49,44 +61,85 @@ io.on('connection', (socket) => {
       socket.emit('error-msg', { message: 'Room not found. Check the code and try again.' });
       return;
     }
+
+    const room = rooms[roomId];
+
+    // Check if room is full
+    if (room.controllers.length >= room.maxPlayers) {
+      const modeLabel = room.mode === 'multi' ? 'Multiplayer (2 players max)' : 'Single player (1 controller max)';
+      socket.emit('error-msg', { message: `Room is full! ${modeLabel}.` });
+      return;
+    }
+
+    // Assign player number (1-indexed)
+    const playerNumber = room.controllers.length + 1;
+    const playerColor = PLAYER_COLORS[playerNumber];
+
     socket.join(roomId);
     socket.roomId = roomId;
     socket.role = 'controller';
-    rooms[roomId].controllers.push(socket.id);
-    socket.emit('joined-room', { roomId });
+    socket.playerNumber = playerNumber;
+
+    room.controllers.push({
+      id: socket.id,
+      playerNumber: playerNumber
+    });
+
+    // Tell the controller which player they are
+    socket.emit('joined-room', { roomId, playerNumber, playerColor });
+    socket.emit('player-assigned', { playerNumber, playerColor });
+
     // Notify the game
-    io.to(rooms[roomId].game).emit('controller-connected', { controllerId: socket.id });
-    console.log(`📱 Controller joined room: ${roomId}`);
+    io.to(room.game).emit('controller-connected', {
+      controllerId: socket.id,
+      playerNumber: playerNumber,
+      playerColor: playerColor,
+      totalControllers: room.controllers.length
+    });
+
+    console.log(`📱 Controller P${playerNumber} joined room: ${roomId}`);
   });
 
-  // Joystick input (continuous)
+  // Joystick input (continuous) — tagged with player number
   socket.on('joystick-input', (data) => {
     if (socket.roomId && rooms[socket.roomId]) {
-      io.to(rooms[socket.roomId].game).emit('joystick-input', data);
+      io.to(rooms[socket.roomId].game).emit('joystick-input', {
+        ...data,
+        playerId: socket.playerNumber || 1
+      });
     }
   });
 
-  // Button actions (discrete)
+  // Button actions (discrete) — tagged with player number
   socket.on('button-action', (data) => {
     if (socket.roomId && rooms[socket.roomId]) {
-      io.to(rooms[socket.roomId].game).emit('button-action', data);
+      io.to(rooms[socket.roomId].game).emit('button-action', {
+        ...data,
+        playerId: socket.playerNumber || 1
+      });
     }
   });
 
   socket.on('disconnect', () => {
     console.log(`❌ Disconnected: ${socket.id}`);
     if (socket.roomId && rooms[socket.roomId]) {
+      const room = rooms[socket.roomId];
       if (socket.role === 'game') {
         // Notify controllers
         io.to(socket.roomId).emit('game-disconnected');
         delete rooms[socket.roomId];
       } else {
-        rooms[socket.roomId].controllers = rooms[socket.roomId].controllers.filter(
-          (id) => id !== socket.id
-        );
-        if (rooms[socket.roomId].game) {
-          io.to(rooms[socket.roomId].game).emit('controller-disconnected', {
-            controllerId: socket.id
+        // Find the disconnected controller's player number
+        const controllerInfo = room.controllers.find(c => c.id === socket.id);
+        const playerNumber = controllerInfo ? controllerInfo.playerNumber : null;
+
+        room.controllers = room.controllers.filter(c => c.id !== socket.id);
+
+        if (room.game) {
+          io.to(room.game).emit('controller-disconnected', {
+            controllerId: socket.id,
+            playerNumber: playerNumber,
+            totalControllers: room.controllers.length
           });
         }
       }
@@ -114,7 +167,7 @@ function getLocalIP() {
 server.listen(PORT, () => {
   const localIP = getLocalIP();
   console.log('');
-  console.log('🚀 Mobile Joystick Controller Server Running!');
+  console.log('🚀 Space Drift — Server Running!');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`🎮 Desktop Game:  http://localhost:${PORT}/game`);
   console.log(`📱 Mobile Ctrl:   http://${localIP}:${PORT}/`);
