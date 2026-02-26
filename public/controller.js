@@ -1,4 +1,4 @@
-// ========== MOBILE CONTROLLER ==========
+// ========== MOBILE CONTROLLER (Multiplayer) ==========
 const socket = io();
 
 // DOM
@@ -12,6 +12,11 @@ const joystickBase = document.getElementById('joystick-base');
 const joystickStick = document.getElementById('joystick-stick');
 const btnFire = document.getElementById('btn-fire');
 const btnBoost = document.getElementById('btn-boost');
+const playerBadge = document.getElementById('player-badge');
+const playerBadgeText = document.getElementById('player-badge-text');
+
+let myPlayerNumber = null;
+let myPlayerColor = null;
 
 // ---- Join Room ----
 joinBtn.addEventListener('click', joinRoom);
@@ -33,9 +38,31 @@ socket.on('joined-room', (data) => {
     joinScreen.classList.add('hidden');
     controllerScreen.classList.remove('hidden');
     roomLabel.textContent = `ROOM ${data.roomId}`;
+
+    // Store player info
+    myPlayerNumber = data.playerNumber;
+    myPlayerColor = data.playerColor;
+
     // Lock orientation hint
     if (screen.orientation && screen.orientation.lock) {
         screen.orientation.lock('landscape').catch(() => { });
+    }
+});
+
+socket.on('player-assigned', (data) => {
+    myPlayerNumber = data.playerNumber;
+    myPlayerColor = data.playerColor;
+
+    // Show player badge
+    playerBadge.classList.remove('hidden');
+    playerBadgeText.textContent = `P${data.playerNumber}`;
+    playerBadge.style.borderColor = data.playerColor;
+    playerBadge.style.color = data.playerColor;
+    playerBadge.style.background = hexToRgba(data.playerColor, 0.12);
+
+    // Apply player theme
+    if (data.playerNumber === 2) {
+        document.body.classList.add('player-2');
     }
 });
 
@@ -47,12 +74,14 @@ socket.on('game-disconnected', () => {
     controllerScreen.classList.add('hidden');
     joinScreen.classList.remove('hidden');
     errorMsg.textContent = 'Game disconnected. Reconnect with a new code.';
+    document.body.classList.remove('player-2');
+    playerBadge.classList.add('hidden');
 });
 
 // ---- Joystick ----
 let joystickActive = false;
 let joystickCenter = { x: 0, y: 0 };
-const maxDistance = 55; // max stick travel from center
+const maxDistance = 55;
 let emitInterval = null;
 let currentJoystickData = { angle: 0, magnitude: 0 };
 
@@ -84,7 +113,6 @@ joystickBase.addEventListener('touchstart', (e) => {
 document.addEventListener('touchmove', (e) => {
     if (!joystickActive) return;
     e.preventDefault();
-    // Find the touch that started on the joystick
     for (let i = 0; i < e.touches.length; i++) {
         handleJoystickMove(e.touches[i]);
         break;
@@ -93,7 +121,6 @@ document.addEventListener('touchmove', (e) => {
 
 document.addEventListener('touchend', (e) => {
     if (!joystickActive) return;
-    // Check if joystick touch is still active
     let stillTouching = false;
     for (let i = 0; i < e.touches.length; i++) {
         const t = e.touches[i];
@@ -122,17 +149,14 @@ function handleJoystickMove(touch) {
     let dy = touch.clientY - joystickCenter.y;
     let distance = Math.sqrt(dx * dx + dy * dy);
 
-    // Clamp to max distance
     if (distance > maxDistance) {
         dx = (dx / distance) * maxDistance;
         dy = (dy / distance) * maxDistance;
         distance = maxDistance;
     }
 
-    // Move stick visually
     joystickStick.style.transform = `translate(${dx}px, ${dy}px)`;
 
-    // Calculate angle and magnitude (0 to 1)
     const angle = Math.atan2(dy, dx);
     const magnitude = distance / maxDistance;
 
@@ -165,6 +189,14 @@ function setupButton(btn, action) {
 
 setupButton(btnFire, 'fire');
 setupButton(btnBoost, 'boost');
+
+// ---- Helpers ----
+function hexToRgba(hex, alpha) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 // ---- Prevent default behaviors ----
 document.addEventListener('gesturestart', (e) => e.preventDefault());
